@@ -7,3 +7,5 @@ export function useDocuments(query: DocumentsQuery) {
     [JSON.stringify(query)],
   );
 }
+
+export type { DocumentsQuery };

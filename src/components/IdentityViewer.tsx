@@ -22,9 +22,9 @@ export function IdentityViewer() {
       {error && <p className="error">{error}</p>}
       {identity && (
         <div className="identity-card">
-          <p><strong>ID:</strong> {identity.getId().toString()}</p>
-          <p><strong>Balance:</strong> {identity.getBalance().toString()} credits</p>
-          <p><strong>Public keys:</strong> {identity.getPublicKeys().length}</p>
+          <p><strong>ID:</strong> {identity.id.toString()}</p>
+          <p><strong>Balance:</strong> {identity.balance.toString()} credits</p>
+          <p><strong>Public keys:</strong> {identity.publicKeys.length}</p>
         </div>
       )}
     </div>

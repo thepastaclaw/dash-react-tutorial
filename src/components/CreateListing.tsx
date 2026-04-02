@@ -1,9 +1,11 @@
 import { useState, useCallback } from 'react';
 import { useDashMutation } from '../hooks/useDashMutation';
+import { Document, IdentitySigner } from '@dashevo/evo-sdk';
 
 const CONTRACT_ID = 'YOUR_CONTRACT_ID';
 const IDENTITY_ID = 'YOUR_IDENTITY_ID';
-const PRIVATE_KEY = 'YOUR_PRIVATE_KEY_WIF';
+const PRIVATE_KEY_WIF = 'YOUR_PRIVATE_KEY_WIF';
+const SIGNING_KEY_INDEX = 0;
 
 export function CreateListing() {
   const [make, setMake] = useState('');
@@ -13,11 +15,24 @@ export function CreateListing() {
 
   const mutation = useDashMutation(
     useCallback(
-      (sdk) =>
-        sdk.documents.create({
-          contractId: CONTRACT_ID,
-          documentType: 'listing',
-          document: {
+      async (sdk) => {
+        // Fetch the owner identity to get the signing key
+        const identity = await sdk.identities.fetch(IDENTITY_ID);
+        if (!identity) throw new Error('Identity not found');
+
+        const identityKey = identity.publicKeys[SIGNING_KEY_INDEX];
+        if (!identityKey) throw new Error('Signing key not found');
+
+        // Create a signer with the private key
+        const signer = new IdentitySigner();
+        signer.addKeyFromWif(PRIVATE_KEY_WIF);
+
+        // Build the document
+        const document = new Document({
+          documentTypeName: 'listing',
+          dataContractId: CONTRACT_ID,
+          ownerId: IDENTITY_ID,
+          properties: {
             make,
             model,
             year,
@@ -25,11 +40,15 @@ export function CreateListing() {
             mileageKm: 0,
             status: 'available',
           },
-          identityId: IDENTITY_ID,
-          privateKeyWif: PRIVATE_KEY,
-          signingKeyIndex: 0,
-          nonce: sdk.identities.contractNonce(IDENTITY_ID, CONTRACT_ID),
-        }),
+        });
+
+        // Broadcast the create transition
+        await sdk.documents.create({
+          document,
+          identityKey,
+          signer,
+        });
+      },
       [make, model, year, price],
     ),
   );
