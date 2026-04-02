@@ -4,8 +4,8 @@ const CONTRACT_ID = 'YOUR_CONTRACT_ID';
 
 export function ListingsList() {
   const { data: results, isLoading, error, refetch } = useDocuments({
-    contractId: CONTRACT_ID,
-    documentType: 'listing',
+    dataContractId: CONTRACT_ID,
+    documentTypeName: 'listing',
     where: [['status', '==', 'available']],
     orderBy: [['priceUsd', 'asc']],
     limit: 20,
@@ -22,10 +22,10 @@ export function ListingsList() {
       <ul>
         {[...results.entries()].map(([id, doc]) => {
           if (!doc) return null;
-          const d = doc.getData();
+          const d = doc.properties as Record<string, unknown>;
           return (
-            <li key={id}>
-              <strong>{d.year} {d.make} {d.model}</strong> — ${d.priceUsd}
+            <li key={id.toString()}>
+              <strong>{d.year as number} {d.make as string} {d.model as string}</strong> — ${d.priceUsd as number}
             </li>
           );
         })}
