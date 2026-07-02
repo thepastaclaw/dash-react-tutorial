@@ -1,13 +1,26 @@
 /**
  * Tutorial: Card Game with Tokens
  *
- * Original code from: https://dashpay.github.io/platform/evo-sdk/tutorials/card-game.html
- * NOTE: This code does NOT compile against @dashevo/evo-sdk@3.1.0-dev.1
+ * Corrected to match the actual @dashevo/evo-sdk@3.1.0-dev.1 API.
+ * Original: https://dashpay.github.io/platform/evo-sdk/tutorials/card-game.html
  */
 
-// @ts-nocheck — original tutorial code, kept verbatim for diffing
-
-import { EvoSDK } from '@dashevo/evo-sdk';
+import {
+  EvoSDK,
+  DataContract,
+  Document,
+  Identifier,
+  IdentitySigner,
+  TokenConfigurationConvention,
+  TokenConfigurationLocalization,
+  TokenConfiguration,
+  ChangeControlRules,
+  AuthorizedActionTakers,
+  TokenDistributionRules,
+  TokenKeepsHistoryRules,
+  TokenMarketplaceRules,
+  TokenTradeMode,
+} from '@dashevo/evo-sdk';
 
 // ──────────────────────────────────────────────
 // Step 1: Design the game contract
@@ -45,37 +58,66 @@ const gameSchema = {
   match: {
     type: 'object',
     properties: {
-      player1Id:  { type: 'string', maxLength: 44 },
-      player2Id:  { type: 'string', maxLength: 44 },
-      winnerId:   { type: 'string', maxLength: 44 },
+      player1Id:    { type: 'string', maxLength: 44 },
+      player2Id:    { type: 'string', maxLength: 44 },
+      winnerId:     { type: 'string', maxLength: 44 },
       player1Score: { type: 'integer', minimum: 0 },
       player2Score: { type: 'integer', minimum: 0 },
-      timestamp:  { type: 'integer' },
+      timestamp:    { type: 'integer' },
     },
     required: ['player1Id', 'player2Id', 'winnerId', 'timestamp'],
     additionalProperties: false,
   },
 };
 
-const gemTokenConfig = {
-  conventions: {
-    localizations: {
-      en: {
-        shouldCapitalize: true,
-        singularForm: 'Gem',
-        pluralForm: 'Gems',
-      },
-    },
-    decimals: 0, // whole numbers only
-  },
-  manualMinting: {
-    rules: { type: 'ownerOnly' },
-  },
-  manualBurning: {
-    rules: { type: 'ownerOnly' },
-  },
-  maxSupply: 10_000_000, // 10 million Gems total
-};
+// Build the GemToken configuration
+const gemLocalization = new TokenConfigurationLocalization(
+  true, 'Gem', 'Gems',
+);
+const gemConventions = new TokenConfigurationConvention(
+  { en: gemLocalization },
+  0, // whole numbers only
+);
+
+const ownerOnly = new ChangeControlRules({
+  authorizedToMakeChange: AuthorizedActionTakers.ContractOwner(),
+  adminActionTakers: AuthorizedActionTakers.ContractOwner(),
+});
+const noOne = new ChangeControlRules({
+  authorizedToMakeChange: AuthorizedActionTakers.NoOne(),
+  adminActionTakers: AuthorizedActionTakers.NoOne(),
+});
+
+const gemTokenConfig = new TokenConfiguration({
+  conventions: gemConventions,
+  conventionsChangeRules: noOne,
+  baseSupply: 0n,
+  maxSupply: 10_000_000n, // 10 million Gems total
+  maxSupplyChangeRules: noOne,
+  keepsHistory: new TokenKeepsHistoryRules({
+    isKeepingMintingHistory: true,
+    isKeepingBurningHistory: true,
+    isKeepingTransferHistory: true,
+  }),
+  distributionRules: new TokenDistributionRules({
+    perpetualDistributionRules: noOne,
+    newTokensDestinationIdentityRules: noOne,
+    mintingAllowChoosingDestination: true,
+    mintingAllowChoosingDestinationRules: noOne,
+    changeDirectPurchasePricingRules: noOne,
+  }),
+  marketplaceRules: new TokenMarketplaceRules(
+    TokenTradeMode.NotTradeable(),
+    noOne,
+  ),
+  manualMintingRules: ownerOnly,
+  manualBurningRules: ownerOnly,
+  freezeRules: noOne,
+  unfreezeRules: noOne,
+  destroyFrozenFundsRules: noOne,
+  emergencyActionRules: noOne,
+  mainControlGroupCanBeModified: AuthorizedActionTakers.NoOne(),
+});
 
 // ──────────────────────────────────────────────
 // Step 2: Deploy the contract
@@ -86,18 +128,32 @@ await sdk.connect();
 
 // Game operator identity
 const operatorId = 'OPERATOR_IDENTITY_ID';
-const operatorKey = 'OPERATOR_PRIVATE_KEY_WIF';
+const operatorKeyWif = 'OPERATOR_PRIVATE_KEY_WIF';
 
-const contract = await sdk.contracts.publish({
-  identityId: operatorId,
-  documentSchemas: gameSchema,
-  tokens: [gemTokenConfig],
-  privateKeyWif: operatorKey,
-  signingKeyIndex: 0,
-  nonce: await sdk.identities.nonce(operatorId),
+const operatorIdentity = await sdk.identities.fetch(operatorId);
+if (!operatorIdentity) throw new Error('Operator identity not found');
+
+const operatorKey = operatorIdentity.publicKeys[0];
+const operatorSigner = new IdentitySigner();
+operatorSigner.addKeyFromWif(operatorKeyWif);
+
+const identityNonce = await sdk.identities.nonce(operatorId);
+if (identityNonce === undefined) throw new Error('Could not fetch nonce');
+
+const dataContract = new DataContract({
+  ownerId: operatorId,
+  identityNonce,
+  schemas: gameSchema,
+  tokens: { 0: gemTokenConfig },
 });
 
-const contractId = contract.getId().toString();
+const contract = await sdk.contracts.publish({
+  dataContract,
+  identityKey: operatorKey,
+  signer: operatorSigner,
+});
+
+const contractId = contract.id.toString();
 const gemTokenId = await sdk.tokens.calculateId(contractId, 0);
 
 console.log('Game contract:', contractId);
@@ -108,15 +164,14 @@ console.log('Gem token:', gemTokenId);
 // ──────────────────────────────────────────────
 
 async function onboardPlayer(playerId: string) {
-  // Gift 100 Gems to the new player
   await sdk.tokens.mint({
-    tokenId: gemTokenId,
-    amount: 100,
-    recipientId: playerId,
-    identityId: operatorId,
-    privateKeyWif: operatorKey,
-    signingKeyIndex: 0,
-    nonce: await sdk.identities.nonce(operatorId),
+    dataContractId: new Identifier(contractId),
+    tokenPosition: 0,
+    amount: 100n,
+    recipientId: new Identifier(playerId),
+    identityId: new Identifier(operatorId),
+    identityKey: operatorKey,
+    signer: operatorSigner,
   });
 
   console.log(`Welcomed ${playerId} with 100 Gems`);
@@ -136,14 +191,17 @@ const starterPack = [
 
 async function createCards(cards: typeof starterPack) {
   for (const card of cards) {
+    const cardDoc = new Document({
+      documentTypeName: 'card',
+      dataContractId: contractId,
+      ownerId: operatorId,
+      properties: card,
+    });
+
     await sdk.documents.create({
-      contractId,
-      documentType: 'card',
-      document: card,
-      identityId: operatorId,
-      privateKeyWif: operatorKey,
-      signingKeyIndex: 0,
-      nonce: await sdk.identities.contractNonce(operatorId, contractId),
+      document: cardDoc,
+      identityKey: operatorKey,
+      signer: operatorSigner,
     });
     console.log(`Created: ${card.name} (${card.rarity})`);
   }
@@ -155,43 +213,48 @@ await createCards(starterPack);
 // Step 5: Player buys a card pack
 // ──────────────────────────────────────────────
 
-const PACK_PRICE = 50; // 50 Gems per pack
+const PACK_PRICE = 50n; // 50 Gems per pack
 
-async function buyPack(playerId: string, playerKey: string) {
+async function buyPack(playerId: string, playerKeyWif: string) {
+  // Set up player signer
+  const playerIdentity = await sdk.identities.fetch(playerId);
+  if (!playerIdentity) throw new Error('Player identity not found');
+
+  const playerKey = playerIdentity.publicKeys[0];
+  const playerSigner = new IdentitySigner();
+  playerSigner.addKeyFromWif(playerKeyWif);
+
   // Player pays Gems to the operator
   await sdk.tokens.transfer({
-    tokenId: gemTokenId,
+    dataContractId: new Identifier(contractId),
+    tokenPosition: 0,
     amount: PACK_PRICE,
-    recipientId: operatorId,
-    identityId: playerId,
-    privateKeyWif: playerKey,
-    signingKeyIndex: 0,
-    nonce: await sdk.identities.nonce(playerId),
+    recipientId: new Identifier(operatorId),
+    senderId: new Identifier(playerId),
+    identityKey: playerKey,
+    signer: playerSigner,
   });
   console.log(`Player paid ${PACK_PRICE} Gems`);
 
   // Operator transfers cards to the player
-  // (In production, select random cards from available pool)
   const availableCards = await sdk.documents.query({
-    contractId,
-    documentType: 'card',
+    dataContractId: contractId,
+    documentTypeName: 'card',
     where: [['$ownerId', '==', operatorId]],
     limit: 5,
   });
 
-  for (const [cardId, card] of availableCards) {
+  for (const [, card] of availableCards) {
     if (!card) continue;
+
     await sdk.documents.transfer({
-      contractId,
-      documentType: 'card',
-      documentId: cardId,
-      recipientId: playerId,
-      identityId: operatorId,
-      privateKeyWif: operatorKey,
-      signingKeyIndex: 0,
-      nonce: await sdk.identities.contractNonce(operatorId, contractId),
+      document: card,
+      recipientId: new Identifier(playerId),
+      identityKey: operatorKey,
+      signer: operatorSigner,
     });
-    console.log(`Transferred ${card.getData().name} to player`);
+    const data = card.properties as Record<string, unknown>;
+    console.log(`Transferred ${data.name} to player`);
   }
 }
 
@@ -201,17 +264,17 @@ async function buyPack(playerId: string, playerKey: string) {
 
 async function getCollection(playerId: string) {
   const cards = await sdk.documents.query({
-    contractId,
-    documentType: 'card',
+    dataContractId: contractId,
+    documentTypeName: 'card',
     where: [['$ownerId', '==', playerId]],
     orderBy: [['power', 'desc']],
     limit: 100,
   });
 
   console.log(`\n${playerId}'s collection:`);
-  for (const [id, card] of cards) {
+  for (const [, card] of cards) {
     if (!card) continue;
-    const d = card.getData();
+    const d = card.properties as Record<string, unknown>;
     console.log(`  [${d.rarity}] ${d.name} — ${d.element} — ATK:${d.power} DEF:${d.defense}`);
   }
 
@@ -221,8 +284,8 @@ async function getCollection(playerId: string) {
 // Filter by rarity
 async function getLegendaries(playerId: string) {
   const legendaries = await sdk.documents.query({
-    contractId,
-    documentType: 'card',
+    dataContractId: contractId,
+    documentTypeName: 'card',
     where: [
       ['$ownerId', '==', playerId],
       ['rarity', '==', 'legendary'],
@@ -237,31 +300,41 @@ async function getLegendaries(playerId: string) {
 // ──────────────────────────────────────────────
 
 async function tradeCards(
-  fromId: string, fromKey: string, fromCardId: string,
-  toId: string, toKey: string, toCardId: string,
+  fromId: string, fromKeyWif: string, fromCardId: string,
+  toId: string, toKeyWif: string, toCardId: string,
 ) {
+  // Set up signers
+  const fromIdentity = await sdk.identities.fetch(fromId);
+  const toIdentity = await sdk.identities.fetch(toId);
+  if (!fromIdentity || !toIdentity) throw new Error('Identity not found');
+
+  const fromKey = fromIdentity.publicKeys[0];
+  const fromSigner = new IdentitySigner();
+  fromSigner.addKeyFromWif(fromKeyWif);
+
+  const toKey = toIdentity.publicKeys[0];
+  const toSigner = new IdentitySigner();
+  toSigner.addKeyFromWif(toKeyWif);
+
+  // Fetch both card documents
+  const fromCard = await sdk.documents.get(contractId, 'card', fromCardId);
+  const toCard = await sdk.documents.get(contractId, 'card', toCardId);
+  if (!fromCard || !toCard) throw new Error('Card not found');
+
   // Player A sends their card to Player B
   await sdk.documents.transfer({
-    contractId,
-    documentType: 'card',
-    documentId: fromCardId,
-    recipientId: toId,
-    identityId: fromId,
-    privateKeyWif: fromKey,
-    signingKeyIndex: 0,
-    nonce: await sdk.identities.contractNonce(fromId, contractId),
+    document: fromCard,
+    recipientId: new Identifier(toId),
+    identityKey: fromKey,
+    signer: fromSigner,
   });
 
   // Player B sends their card to Player A
   await sdk.documents.transfer({
-    contractId,
-    documentType: 'card',
-    documentId: toCardId,
-    recipientId: fromId,
-    identityId: toId,
-    privateKeyWif: toKey,
-    signingKeyIndex: 0,
-    nonce: await sdk.identities.contractNonce(toId, contractId),
+    document: toCard,
+    recipientId: new Identifier(fromId),
+    identityKey: toKey,
+    signer: toSigner,
   });
 
   console.log('Trade complete!');
@@ -276,10 +349,11 @@ async function recordMatch(
   winnerId: string,
   p1Score: number, p2Score: number,
 ) {
-  await sdk.documents.create({
-    contractId,
-    documentType: 'match',
-    document: {
+  const matchDoc = new Document({
+    documentTypeName: 'match',
+    dataContractId: contractId,
+    ownerId: operatorId,
+    properties: {
       player1Id,
       player2Id,
       winnerId,
@@ -287,21 +361,23 @@ async function recordMatch(
       player2Score: p2Score,
       timestamp: Date.now(),
     },
-    identityId: operatorId,
-    privateKeyWif: operatorKey,
-    signingKeyIndex: 0,
-    nonce: await sdk.identities.contractNonce(operatorId, contractId),
+  });
+
+  await sdk.documents.create({
+    document: matchDoc,
+    identityKey: operatorKey,
+    signer: operatorSigner,
   });
 
   // Reward the winner with Gems
   await sdk.tokens.mint({
-    tokenId: gemTokenId,
-    amount: 10,
-    recipientId: winnerId,
-    identityId: operatorId,
-    privateKeyWif: operatorKey,
-    signingKeyIndex: 0,
-    nonce: await sdk.identities.nonce(operatorId),
+    dataContractId: new Identifier(contractId),
+    tokenPosition: 0,
+    amount: 10n,
+    recipientId: new Identifier(winnerId),
+    identityId: new Identifier(operatorId),
+    identityKey: operatorKey,
+    signer: operatorSigner,
   });
 
   console.log(`Match recorded. ${winnerId} wins and earns 10 Gems!`);
@@ -313,8 +389,8 @@ async function recordMatch(
 
 async function getWinCounts() {
   const matches = await sdk.documents.query({
-    contractId,
-    documentType: 'match',
+    dataContractId: contractId,
+    documentTypeName: 'match',
     orderBy: [['timestamp', 'desc']],
     limit: 100,
   });
@@ -322,7 +398,8 @@ async function getWinCounts() {
   const wins = new Map<string, number>();
   for (const [, doc] of matches) {
     if (!doc) continue;
-    const winner = doc.getData().winnerId;
+    const data = doc.properties as Record<string, unknown>;
+    const winner = data.winnerId as string;
     wins.set(winner, (wins.get(winner) ?? 0) + 1);
   }
 
